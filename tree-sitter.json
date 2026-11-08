@@ -1,0 +1,56 @@
+{
+  "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
+  "grammars": [
+    {
+      "name": "javascript_orchard",
+      "camelcase": "JavaScriptOrchard",
+      "title": "JavaScript",
+      "scope": "source.js",
+      "file-types": [
+        "jsx",
+        "js",
+        "mjs",
+        "cjs"
+      ],
+      "highlights": [
+        "queries/highlights.scm",
+        "queries/highlights-jsx.scm",
+        "queries/highlights-params.scm"
+      ],
+      "tags": [
+        "queries/tags.scm"
+      ],
+      "injection-regex": "^(js|javascript)$",
+      "class-name": "TreeSitterJavascriptOrchard"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Parser for JavaScript files",
+    "authors": [
+      {
+        "name": "Max Brunsfeld",
+        "email": "maxbrunsfeld@gmail.com"
+      },
+      {
+        "name": "Amaan Qureshi",
+        "email": "amaanq12@gmail.com"
+      }
+    ],
+    "links": {
+      "repository": "https://codeberg.org/grammar-orchard/tree-sitter-javascript-orchard",
+      "upstream": "https://github.com/tree-sitter/tree-sitter-javascript",
+      "github_mirror": "https://github.com/grammar-orchard/tree-sitter-javascript-orchard"
+    }
+  },
+  "bindings": {
+    "c": true,
+    "go": true,
+    "node": true,
+    "python": true,
+    "rust": true,
+    "swift": true,
+    "zig": false
+  }
+}

@@ -8,6 +8,20 @@
 /// <reference types="tree-sitter-cli/dsl" />
 // @ts-check
 
+// https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Lexical_grammar#reserved_words
+const RESERVED_WORDS = [
+  'break', 'case', 'catch', 'class', 'const', 'continue',
+  'debugger', 'default', 'delete', 'do', 'else', 'export',
+  'extends', 'false', 'finally', 'for', 'function', 'if',
+  'import', 'in', 'instanceof', 'new', 'null', 'return',
+  'super', 'switch', 'this', 'throw', 'true', 'try',
+  'typeof', 'var', 'void', 'while', 'with',
+];
+
+const CONTEXTUAL_KEYWORDS = [
+  'get', 'set', 'async', 'await', 'static', 'export', 'let',
+];
+
 export default grammar({
   name: 'javascript_orchard',
 
@@ -15,8 +29,13 @@ export default grammar({
     $._automatic_semicolon,
     $._template_chars,
     $._ternary_qmark,
+    $._shorthand_arrow,
     $.html_comment,
+    // we use these just as signaling to the ASI scanner
     '||',
+    '(',
+    '[',
+    '{',
     // We use escape sequence and regex pattern to tell the scanner if we're currently inside a string or template string, in which case
     // it should NOT parse html comments.
     $.escape_sequence,
@@ -31,44 +50,7 @@ export default grammar({
   ],
 
   reserved: {
-    // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Lexical_grammar#reserved_words
-    global: $ => [
-      'break',
-      'case',
-      'catch',
-      'class',
-      'const',
-      'continue',
-      'debugger',
-      'default',
-      'delete',
-      'do',
-      'else',
-      'export',
-      'extends',
-      'false',
-      'finally',
-      'for',
-      'function',
-      'if',
-      'import',
-      'in',
-      'instanceof',
-      'new',
-      'null',
-      'return',
-      'super',
-      'switch',
-      'this',
-      'throw',
-      'true',
-      'try',
-      'typeof',
-      'var',
-      'void',
-      'while',
-      'with',
-    ],
+    global: $ => RESERVED_WORDS,
     properties: $ => [],
   },
 
@@ -95,12 +77,12 @@ export default grammar({
     $._jsx_attribute_value,
     $._jsx_identifier,
     $._lhs_expression,
+    $._keyword_identifier,
   ],
 
   precedences: $ => [
     [
       'member',
-      'template_call',
       'call',
       $.update_expression,
       'unary_void',
@@ -120,8 +102,9 @@ export default grammar({
       $.sequence_expression,
       $.arrow_function,
     ],
+    ['new', $.primary_expression],
     ['assign', $.primary_expression],
-    ['member', 'template_call', 'new', 'call', $.expression],
+    ['member', 'new_args', 'call', 'new_no_args', $.expression],
     ['declaration', 'literal'],
     [$.primary_expression, $.statement_block, 'object'],
     [$.meta_property, $.import],
@@ -561,12 +544,14 @@ export default grammar({
       $.binary_expression,
       $.ternary_expression,
       $.update_expression,
-      $.new_expression,
       $.yield_expression,
+      $.arrow_function,
     ),
 
+    // Note: this is similar to MemberExpression from the ecmascript spec
     primary_expression: $ => choice(
       $.subscript_expression,
+      $.new_expression,
       $.member_expression,
       $.parenthesized_expression,
       $._identifier,
@@ -583,7 +568,6 @@ export default grammar({
       $.object,
       $.array,
       $.function_expression,
-      $.arrow_function,
       $.generator_function,
       $.class,
       $.meta_property,
@@ -699,9 +683,12 @@ export default grammar({
 
     jsx_identifier: _ => /[a-zA-Z_$][a-zA-Z\d_$]*-[a-zA-Z\d_$\-]*/,
 
+    jsx_keyword_identifier: _ => choice(...RESERVED_WORDS, ...CONTEXTUAL_KEYWORDS),
+
     _jsx_identifier: $ => choice(
       alias($.jsx_identifier, $.identifier),
       $.identifier,
+      alias($.jsx_keyword_identifier, $.identifier),
     ),
 
     nested_identifier: $ => prec('member', seq(
@@ -710,11 +697,20 @@ export default grammar({
       field('property', alias($.identifier, $.property_identifier)),
     )),
 
+    jsx_member_expression: $ => prec('member', seq(
+      field('object', choice(
+        $._jsx_identifier,
+        alias($.jsx_member_expression, $.member_expression),
+      )),
+      '.',
+      field('property', alias($._jsx_identifier, $.property_identifier)),
+    )),
+
     jsx_namespace_name: $ => seq($._jsx_identifier, ':', $._jsx_identifier),
 
     _jsx_element_name: $ => choice(
       $._jsx_identifier,
-      alias($.nested_identifier, $.member_expression),
+      alias($.jsx_member_expression, $.member_expression),
       $.jsx_namespace_name,
     ),
 
@@ -733,7 +729,10 @@ export default grammar({
 
     _jsx_attribute: $ => choice($.jsx_attribute, $.jsx_expression),
 
-    _jsx_attribute_name: $ => choice(alias($._jsx_identifier, $.property_identifier), $.jsx_namespace_name),
+    _jsx_attribute_name: $ => choice(
+      alias($._jsx_identifier, $.property_identifier),
+      $.jsx_namespace_name,
+    ),
 
     jsx_attribute: $ => seq(
       $._jsx_attribute_name,
@@ -841,11 +840,16 @@ export default grammar({
         )),
         $._call_signature,
       ),
-      '=>',
-      field('body', choice(
-        $.expression,
-        $.statement_block,
-      )),
+      choice(
+        seq(
+          alias($._shorthand_arrow, '=>'),
+          field('body', $.expression),
+        ),
+        seq(
+          choice('=>', alias($._shorthand_arrow, '=>')),
+          field('body', $.statement_block),
+        ),
+      ),
     ),
 
     // Override
@@ -856,12 +860,8 @@ export default grammar({
 
     call_expression: $ => choice(
       prec('call', seq(
-        field('function', choice($.expression, $.import)),
-        field('arguments', $.arguments),
-      )),
-      prec('template_call', seq(
-        field('function', choice($.primary_expression, $.new_expression)),
-        field('arguments', $.template_string),
+        field('function', choice($.primary_expression, $.import)),
+        field('arguments', choice($.arguments, $.template_string)),
       )),
       prec('member', seq(
         field('function', $.primary_expression),
@@ -870,11 +870,17 @@ export default grammar({
       )),
     ),
 
-    new_expression: $ => prec.right('new', seq(
-      'new',
-      field('constructor', choice($.primary_expression, $.new_expression)),
-      field('arguments', optional(prec.dynamic(1, $.arguments))),
-    )),
+    new_expression: $ => choice(
+      prec('new_args', seq(
+        'new',
+        field('constructor', $.primary_expression),
+        field('arguments', $.arguments),
+      )),
+      prec('new_no_args', seq(
+        'new',
+        field('constructor', $.primary_expression),
+      )),
+    ),
 
     await_expression: $ => prec('unary_void', seq(
       'await',
@@ -886,7 +892,10 @@ export default grammar({
       choice('.', field('optional_chain', $.optional_chain)),
       field('property', choice(
         $.private_property_identifier,
-        reserved('properties', alias($.identifier, $.property_identifier)),
+        reserved('properties', alias(
+          choice($.identifier, $._keyword_identifier),
+          $.property_identifier,
+        )),
       )),
     )),
 
@@ -1287,15 +1296,9 @@ export default grammar({
       ']',
     ),
 
-    _reserved_identifier: _ => choice(
-      'get',
-      'set',
-      'async',
-      'await',
-      'static',
-      'export',
-      'let',
-    ),
+    _reserved_identifier: _ => choice(...CONTEXTUAL_KEYWORDS),
+
+    _keyword_identifier: _ => choice(...RESERVED_WORDS, ...CONTEXTUAL_KEYWORDS),
 
     _semicolon: $ => choice($._automatic_semicolon, ';'),
   },

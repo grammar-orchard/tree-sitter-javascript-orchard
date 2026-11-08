@@ -7,8 +7,12 @@ enum TokenType {
     AUTOMATIC_SEMICOLON,
     TEMPLATE_CHARS,
     TERNARY_QMARK,
+    SHORTHAND_ARROW,
     HTML_COMMENT,
     LOGICAL_OR,
+    LEFT_PARENTHESIS,
+    LEFT_SQUARE_BRACKET,
+    LEFT_CURLY_BRACE,
     ESCAPE_SEQUENCE,
     REGEX_PATTERN,
     JSX_TEXT,
@@ -16,11 +20,20 @@ enum TokenType {
 
 void *tree_sitter_javascript_orchard_external_scanner_create() { return NULL; }
 
-void tree_sitter_javascript_orchard_external_scanner_destroy(void *p) {}
+void tree_sitter_javascript_orchard_external_scanner_destroy(void *p) {
+    (void)p;
+}
 
-unsigned tree_sitter_javascript_orchard_external_scanner_serialize(void *payload, char *buffer) { return 0; }
+unsigned tree_sitter_javascript_orchard_external_scanner_serialize(void *payload, char *buffer) {
+    (void)payload;
+    (void)buffer;
+    return 0; }
 
-void tree_sitter_javascript_orchard_external_scanner_deserialize(void *p, const char *b, unsigned n) {}
+void tree_sitter_javascript_orchard_external_scanner_deserialize(void *p, const char *b, unsigned n) {
+    (void)p;
+    (void)b;
+    (void)n;
+}
 
 static inline void advance(TSLexer *lexer) { lexer->advance(lexer, false); }
 
@@ -107,7 +120,7 @@ static WhitespaceResult scan_whitespace_and_comments(TSLexer *lexer, bool *scann
     }
 }
 
-static bool scan_automatic_semicolon(TSLexer *lexer, bool comment_condition, bool *scanned_comment) {
+static bool scan_automatic_semicolon(TSLexer *lexer, bool comment_condition, bool *scanned_comment, const bool *valid_symbols) {
     lexer->result_symbol = AUTOMATIC_SEMICOLON;
     lexer->mark_end(lexer);
 
@@ -162,14 +175,19 @@ static bool scan_automatic_semicolon(TSLexer *lexer, bool comment_condition, boo
         case '>':
         case '<':
         case '=':
-        case '[':
-        case '(':
         case '?':
         case '^':
         case '|':
         case '&':
         case '/':
             return false;
+
+        case '[':
+            return !valid_symbols[LEFT_SQUARE_BRACKET];
+        case '(':
+            return !valid_symbols[LEFT_PARENTHESIS];
+        case '{':
+            return !valid_symbols[LEFT_CURLY_BRACE];
 
         // Insert a semicolon before decimals literals but not otherwise.
         case '.':
@@ -223,13 +241,6 @@ static bool scan_automatic_semicolon(TSLexer *lexer, bool comment_condition, boo
 }
 
 static bool scan_ternary_qmark(TSLexer *lexer) {
-    for (;;) {
-        if (!iswspace(lexer->lookahead)) {
-            break;
-        }
-        skip(lexer);
-    }
-
     if (lexer->lookahead == '?') {
         advance(lexer);
 
@@ -289,6 +300,35 @@ static bool scan_html_comment(TSLexer *lexer) {
     return true;
 }
 
+// After an `&`: is what follows the rest of an HTML character reference
+// (`&amp;`, `&#38;`, `&#x26;`), as the grammar's html_character_reference
+// token defines it? Consumes the name or number either way.
+static bool scan_character_reference_tail(TSLexer *lexer) {
+    unsigned length = 0;
+    if (lexer->lookahead == '#') {
+        advance(lexer);
+        if (lexer->lookahead == 'x' || lexer->lookahead == 'X') {
+            advance(lexer);
+            while (length < 6 && iswxdigit(lexer->lookahead)) {
+                advance(lexer);
+                length++;
+            }
+        } else {
+            while (length < 5 && iswdigit(lexer->lookahead)) {
+                advance(lexer);
+                length++;
+            }
+        }
+    } else {
+        while (length < 30 && ((lexer->lookahead >= 'a' && lexer->lookahead <= 'z') ||
+                               (lexer->lookahead >= 'A' && lexer->lookahead <= 'Z'))) {
+            advance(lexer);
+            length++;
+        }
+    }
+    return length > 0 && lexer->lookahead == ';';
+}
+
 static bool scan_jsx_text(TSLexer *lexer) {
     // saw_text will be true if we see any non-whitespace content, or any whitespace content that is not a newline and
     // does not immediately follow a newline.
@@ -297,8 +337,22 @@ static bool scan_jsx_text(TSLexer *lexer) {
     // immediately follows a newline.
     bool at_newline = false;
 
+    lexer->result_symbol = JSX_TEXT;
+
     while (lexer->lookahead != 0 && lexer->lookahead != '<' && lexer->lookahead != '>' && lexer->lookahead != '{' &&
-           lexer->lookahead != '}' && lexer->lookahead != '&') {
+           lexer->lookahead != '}') {
+        if (lexer->lookahead == '&') {
+            // A character reference is its own token: the text ends before it.
+            // A bare ampersand (`Shipping & Handling`) is text.
+            lexer->mark_end(lexer);
+            advance(lexer);
+            if (scan_character_reference_tail(lexer)) {
+                return saw_text;
+            }
+            saw_text = true;
+            at_newline = false;
+            continue;
+        }
         bool is_wspace = iswspace(lexer->lookahead);
         if (lexer->lookahead == '\n') {
             at_newline = true;
@@ -326,11 +380,38 @@ static bool scan_jsx_text(TSLexer *lexer) {
         advance(lexer);
     }
 
-    lexer->result_symbol = JSX_TEXT;
+    lexer->mark_end(lexer);
     return saw_text;
 }
 
+static bool scan_shorthand_arrow(TSLexer *lexer) {
+    lexer->result_symbol = SHORTHAND_ARROW;
+
+    for (;;) {
+        if (!iswspace(lexer->lookahead)) {
+            break;
+        }
+        skip(lexer);
+    }
+    if (lexer->lookahead == '=') {
+        advance(lexer);
+        if (lexer->lookahead == '>') {
+            advance(lexer);
+            lexer->mark_end(lexer);
+            for (;;) {
+                if (!iswspace(lexer->lookahead)) {
+                    break;
+                }
+                skip(lexer);
+            }
+            return lexer->lookahead != '{';            
+        }
+    }
+    return false;
+}
+
 bool tree_sitter_javascript_orchard_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) {
+    (void)payload;
     if (valid_symbols[TEMPLATE_CHARS]) {
         if (valid_symbols[AUTOMATIC_SEMICOLON]) {
             return false;
@@ -344,15 +425,30 @@ bool tree_sitter_javascript_orchard_external_scanner_scan(void *payload, TSLexer
 
     if (valid_symbols[AUTOMATIC_SEMICOLON]) {
         bool scanned_comment = false;
-        bool ret = scan_automatic_semicolon(lexer, !valid_symbols[LOGICAL_OR], &scanned_comment);
+        bool ret = scan_automatic_semicolon(lexer, !valid_symbols[LOGICAL_OR], &scanned_comment, valid_symbols);
         if (!ret && !scanned_comment && valid_symbols[TERNARY_QMARK] && lexer->lookahead == '?') {
             return scan_ternary_qmark(lexer);
+        }
+        if (!ret && valid_symbols[SHORTHAND_ARROW] && lexer->lookahead == '=') {
+            return scan_shorthand_arrow(lexer);
         }
         return ret;
     }
 
     if (valid_symbols[TERNARY_QMARK]) {
-        return scan_ternary_qmark(lexer);
+        for (;;) {
+            if (!iswspace(lexer->lookahead)) {
+                break;
+            }
+            skip(lexer);
+        }
+        if (lexer->lookahead == '?') {
+            return scan_ternary_qmark(lexer);
+        }
+    }
+
+    if (valid_symbols[SHORTHAND_ARROW]) {
+        return scan_shorthand_arrow(lexer);
     }
 
     if (valid_symbols[HTML_COMMENT] && !valid_symbols[LOGICAL_OR] && !valid_symbols[ESCAPE_SEQUENCE] &&
